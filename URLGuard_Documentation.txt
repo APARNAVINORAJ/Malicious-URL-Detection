@@ -1,0 +1,610 @@
+URLGuard — Malicious URL Detection: Complete Documentation
+==========================================================
+
+TABLE OF CONTENTS
+-----------------
+1. Project Overview
+2. Architecture & How It Works
+3. File-by-File Code Explanation
+   3.1 feature.py
+   3.2 train_model.py
+   3.3 database.py
+   3.4 threat_intel.py
+   3.5 app.py
+4. Templates & Frontend
+5. Step-by-Step: How to Run the Project
+6. REST API Documentation
+7. Concept Glossary
+
+
+===========================================================
+1. PROJECT OVERVIEW
+===========================================================
+
+URLGuard is an AI-powered web application that detects whether a URL is malicious or safe.
+It combines two detection strategies:
+
+  Strategy                  Description
+  ------------------------  ---------------------------------------------------
+  Rule-based pre-filter     Instantly catches obvious threats: IP addresses as
+                            domains, @ symbols, URL shorteners
+  Machine Learning model    A Gradient Boosting Classifier trained on 11,054
+                            labeled URLs using 30 extracted features
+
+Additionally it integrates:
+  - VirusTotal API       : cross-checks the URL against 70+ antivirus engines
+  - SHAP explainability  : tells you WHY the model made its decision
+  - SQLite database      : stores every scan for history and analytics
+
+
+===========================================================
+2. ARCHITECTURE & HOW IT WORKS
+===========================================================
+
+User enters URL
+      |
+      v
+Rule-Based Pre-filter (app.py)
+  |-- Raw IP address?  --> MALICIOUS (instant)
+  |-- Contains "@"?    --> MALICIOUS (instant)
+  |-- URL shortener?   --> MALICIOUS (instant)
+      |
+      | (no rule triggered)
+      v
+FeatureExtraction (feature.py)
+  -> Fetches page with requests
+  -> Parses HTML with BeautifulSoup
+  -> Queries WHOIS for domain info
+  -> Produces 30 numeric features (each: 1=safe, 0=neutral, -1=risk)
+      |
+      v
+ML Model (model.pkl)
+  -> GradientBoostingClassifier.predict()
+  -> Returns: class (1=safe / -1=malicious) + probability
+      |
+      v
+SHAP Explainer
+  -> Computes top 8 features that influenced the decision
+      |
+      v
+VirusTotal API (threat_intel.py)
+  -> Cross-checks against 70+ AV engines
+      |
+      v
+Save to SQLite (database.py)
+      |
+      v
+Result emitted via Socket.IO --> Displayed in browser
+
+WHY SOCKET.IO (WEBSOCKET)?
+Scanning a URL involves network calls (WHOIS, page fetch, VirusTotal) which can take 5-15 seconds.
+Instead of making the user wait on a blank page (HTTP), WebSocket lets the server push real-time
+progress updates (10%... 25%... 83%...) to the browser as each step completes.
+
+
+===========================================================
+3. FILE-BY-FILE CODE EXPLANATION
+===========================================================
+
+-----------------------------------------------------------
+3.1 feature.py
+-----------------------------------------------------------
+
+PURPOSE:
+  Visits a URL and extracts 30 numerical features that the ML model uses to classify it.
+
+DESIGN PATTERN:
+  A class FeatureExtraction. When you create an object with a URL, __init__ immediately
+  fetches the page and computes all 30 features.
+
+__init__(self, url):
+  self.response = requests.get(url, timeout=10)      # fetches page HTML
+  self.soup = BeautifulSoup(self.response.text, ...) # parses HTML
+  self.urlparse = urlparse(url)                      # breaks URL into parts
+  self.domain = self.urlparse.netloc                 # e.g. "google.com"
+  self.whois_response = whois.whois(self.domain)     # domain registration info
+
+  Each of these is wrapped in try/except because a malicious URL may be unreachable,
+  have no WHOIS record, etc. If something fails, the feature that depends on it safely
+  returns -1 (risk signal).
+
+FEATURE ENCODING CONVENTION:
+  Every feature returns one of three values:
+    1   = Safe signal
+    0   = Neutral / suspicious
+   -1   = Risk signal
+
+ALL 30 FEATURES EXPLAINED:
+
+  #   Feature                  What it checks                            Risk if...
+  --  -----------------------  ----------------------------------------  -------------------------
+   1  UsingIp                  Is the domain a raw IP? (192.168.1.1)     IP used (no domain name)
+   2  LongURL                  URL length: <54=safe, 54-75=neutral,      URL is suspiciously long
+                               >75=risk
+   3  ShortURL                 Domain matches known shortener list        Uses shortener to hide
+                               (bit.ly, tinyurl, etc.)                   destination
+   4  Symbol@                  @ appears in the URL                      user@evil.com/steal --
+                                                                         browser ignores before @
+   5  Redirecting//            // appears after position 6 in URL        Double-slash redirect trick
+   6  PrefixSuffix             Hyphen - in the domain name               paypal-secure.com spoofing
+   7  SubDomains               Number of dots in URL                     login.bank.evil.com --
+                               (1=safe, 2=neutral, 3+=risk)              deep subdomains
+   8  HTTPS                    Does URL use https://?                    No encryption = higher risk
+   9  DomainRegLen             Domain registered for >=12 months?        Newly registered domains
+                               (from WHOIS)                              are suspicious
+  10  Favicon                  Is favicon loaded from same domain?       Phishing sites copy
+                                                                         favicons externally
+  11  NonStdPort               Non-standard port in domain? (:8080)      Hiding on unusual ports
+  12  HTTPSDomainURL           Does domain text contain "https"?         Visual deception trick
+                               (trick: https.evil.com)                   (https.evil.com)
+  13  RequestURL               % of page resources loaded from           Phishing loads content
+                               external domains                          from attacker's server
+  14  AnchorURL                % of <a href> links pointing outside      Phishing pages link out
+                               the domain                                heavily
+  15  LinksInScriptTags        % of <link> and <script> tags pointing    Phishing loads
+                               to external sources                       styles/scripts externally
+  16  ServerFormHandler        Where does <form action=""> submit to?    Forms submitting to
+                                                                         external/blank URLs
+  17  InfoEmail                Does page HTML contain mailto: or mail()  Harvesting email addresses
+  18  AbnormalURL              Does page content match WHOIS info?       Unrelated content
+  19  WebsiteForwarding        How many HTTP redirects happened?         Excessive redirects hide
+                               (<=1 safe, 2-4 neutral, 5+ risk)         final destination
+  20  StatusBarCust            Does JS use onmouseover to show fake      Classic phishing trick
+                               URLs in status bar?
+  21  DisableRightClick        Does JS detect right-click to disable?    Prevents Inspect Element
+  22  UsingPopupWindow         Does page use alert() popups?             Fake login popups
+  23  IframeRedirection        Does page use <iframe> or <frameBorder>?  Hidden iframes loading
+                                                                         malicious content
+  24  AgeofDomain              How old is the domain?                    Newly created = suspicious
+                               (WHOIS creation date, >=6 months=safe)
+  25  DNSRecording             Same as AgeofDomain using WHOIS date      DNS record existence check
+  26  WebsiteTraffic           Alexa rank < 100,000 = safe (popular)    Unknown sites with no
+                                                                         traffic
+  27  PageRank                 Global rank from checkpagerank.net        Low-rank unknown sites
+                               < 100,000 = safe
+  28  GoogleIndex              Is the URL indexed in Google search?      Legitimate sites are
+                                                                         indexed
+  29  LinksPointingToPage      How many <a href> links in raw HTML?      Excessive outbound links
+                               (0=safe, 1-2=neutral, 3+=risk)
+  30  StatsReport              Does domain/IP match known malicious      Known bad actor
+                               blacklists?
+
+getFeaturesList()   --> returns [1, 1, -1, 1, 1, ...]   (used by ML model, needs array)
+getFeaturesDict()   --> returns {"Using IP Address": 1, "Long URL": 1, ...}  (used for display)
+
+
+-----------------------------------------------------------
+3.2 train_model.py
+-----------------------------------------------------------
+
+PURPOSE:
+  Reads the labeled dataset, trains the ML model, evaluates it, and saves it as model.pkl.
+  Run this ONCE before starting the app. Never need to run again unless retraining.
+
+DATASET (malicious.csv):
+  - 11,054 rows, each is a URL that has already been feature-extracted (30 columns)
+  - "class" column: 1 = safe, -1 = malicious
+  - Pre-processed dataset -- does NOT store actual URLs, just feature numbers
+
+WHY GRADIENT BOOSTING CLASSIFIER (GBC)?
+  Gradient Boosting builds an ensemble of decision trees sequentially. Each new tree corrects
+  the errors of the previous one. Excellent for tabular data like this (small, clean, numeric).
+
+  GradientBoostingClassifier(
+      n_estimators=200,   # 200 decision trees in the ensemble
+      max_depth=4,        # each tree can be at most 4 levels deep
+      learning_rate=0.1,  # how much each tree corrects the previous (small = more careful)
+      random_state=42     # fixed seed so results are reproducible
+  )
+
+TRAIN/TEST SPLIT:
+  train_test_split(X, y, test_size=0.2, stratify=y)
+  - test_size=0.2  --> 80% for training, 20% for evaluation
+  - stratify=y     --> ensures split keeps the same safe/malicious ratio as original data
+                       (important when classes are imbalanced)
+
+OUTPUT (model.pkl):
+  - Saved using pickle.dump() -- serializes the trained Python object to a binary file
+  - Loaded back in app.py using pickle.load() at startup
+
+
+-----------------------------------------------------------
+3.3 database.py
+-----------------------------------------------------------
+
+PURPOSE:
+  Persists every URL scan to a local SQLite database for the History page and Dashboard.
+
+SQLITE:
+  File-based database (stored as scans.db) -- no separate database server needed.
+  Python includes it in the standard library (import sqlite3).
+
+SCHEMA:
+  CREATE TABLE scans (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      url              TEXT    NOT NULL,
+      is_safe          INTEGER NOT NULL,     -- 1 = safe, 0 = malicious
+      safe_probability REAL    NOT NULL,     -- 0.0 to 1.0
+      rule_triggered   TEXT,                 -- NULL if ML ran, else rule name
+      features         TEXT,                 -- JSON string of the 30 features
+      scanned_at       TEXT    NOT NULL      -- "2024-04-16 14:23:00"
+  )
+
+FUNCTIONS:
+  init_db()              Creates the table if it doesn't exist. Called once at startup.
+  save_scan(...)         Inserts one row. features dict stored as JSON string.
+  get_recent_scans(N)    Returns last N scans, newest first. Used by History page.
+  get_stats()            Aggregates totals, daily counts for 7 days, top triggered rules.
+                         Used by Dashboard.
+
+PARAMETERIZED QUERIES:
+  conn.execute("INSERT INTO scans VALUES (?, ?, ?, ?, ?, ?)", (url, is_safe, ...))
+  The ? placeholders prevent SQL injection -- values passed separately, never concatenated.
+
+
+-----------------------------------------------------------
+3.4 threat_intel.py
+-----------------------------------------------------------
+
+PURPOSE:
+  Looks up a URL in VirusTotal's database, which aggregates results from 70+ antivirus engines.
+
+HOW VIRUSTOTAL API V3 WORKS:
+  1. Every URL has a unique ID: base64url(url) (no padding =)
+  2. Send GET /urls/{url_id} with your API key
+  3. If URL is known (HTTP 200) --> returns scan stats immediately
+  4. If URL is unknown (HTTP 404) --> submit it with POST /urls for analysis
+
+  url_id = base64.urlsafe_b64encode(url.encode()).decode().strip("=")
+
+RETURN VALUES:
+  URL found in VT database:
+    {"status": "found", "malicious": 3, "suspicious": 1, "harmless": 65, "total": 72}
+
+  URL not yet in database:
+    {"status": "submitted", "message": "URL submitted to VirusTotal -- check back shortly"}
+
+  No API key configured:
+    {"status": "unavailable", "message": "No VT_API_KEY set"}
+
+WHY CHECK VT_API_KEY FIRST?
+  The API key comes from an environment variable. If not set, function returns immediately
+  instead of making a failing HTTP request. App works fine without a key.
+
+
+-----------------------------------------------------------
+3.5 app.py
+-----------------------------------------------------------
+
+PURPOSE:
+  The main Flask web application. Ties all modules together, serves the web UI + REST API.
+
+KEY COMPONENTS:
+
+  1. Model loading at startup
+     with open("model.pkl", "rb") as f:
+         model = pickle.load(f)
+     Loaded once at server start, kept in memory. If model.pkl missing, model = None.
+
+  2. SHAP Explainer
+     shap_explainer = shap.TreeExplainer(model)
+     SHAP (SHapley Additive exPlanations) -- game-theory-based ML explanation.
+     TreeExplainer optimized for tree-based models like GBC. Calculates how much each of
+     the 30 features contributed (positively or negatively) to the final prediction.
+
+  3. _to_python() -- numpy serialization fix
+     def _to_python(obj):
+         if isinstance(obj, np.integer): return int(obj)
+         if isinstance(obj, np.floating): return float(obj)
+         if isinstance(obj, np.bool_):   return bool(obj)
+     The ML model returns numpy types (np.int64, np.float32) which Python's JSON encoder
+     doesn't understand. Recursively converts entire result dict to standard Python types.
+
+  4. Rule-based pre-filter _rule_based_check(url)
+     ipaddress.ip_address(hostname)  # raises ValueError if domain, passes if IP
+     Checks in order:
+       - Raw IP address as hostname  --> instantly malicious
+       - @ symbol in URL             --> instantly malicious (phishing pattern)
+       - URL shortener domain        --> instantly malicious (unknown destination)
+     If any rule fires, ML model is SKIPPED ENTIRELY -- faster and avoids noisy results.
+
+  5. run_scan_background(sid, url) -- WebSocket scan worker
+     Runs in a background thread (not blocking the server).
+     - Emits progress events: socketio.emit("scan_progress", {...}, to=sid)
+     - sid = Socket.IO session ID -- ensures progress goes to the right browser tab
+     - After completing, emits "scan_result" with the full result dict
+     - On exception, emits "scan_error" with the error message
+
+  6. ROUTES:
+     /           GET        Main scanner page
+     /bulk       GET, POST  Scan up to 50 URLs at once
+     /history    GET        Last 100 scans from database
+     /dashboard  GET        Stats and charts from database
+     /api/check  POST       REST API endpoint (JSON in, JSON out)
+
+  7. SOCKET.IO EVENTS:
+     Client --> Server:
+       scan_url        Validates input, starts background scan thread
+
+     Server --> Client:
+       scan_progress   After each processing step
+       scan_result     When scan is complete
+       scan_error      If an exception occurs
+
+
+===========================================================
+4. TEMPLATES & FRONTEND
+===========================================================
+
+  File              Description
+  ----------------  ---------------------------------------------------------
+  base.html         Shared layout: navbar, footer, Bootstrap 5 CSS,
+                    Socket.IO JS CDN
+  index.html        Scanner page. No form POST -- uses Socket.IO exclusively.
+                    JS functions: startScan(), renderResult(),
+                    renderThreatIntel(), renderShap(), renderFeatures()
+  bulk.html         Textarea-based multi-URL scanner. Regular form POST.
+                    Shows a results table.
+  history.html      Table of past scans from the database, with confidence
+                    progress bars
+  dashboard.html    Analytics: doughnut chart (safe vs malicious), bar chart
+                    (daily scans), stat cards. Powered by Chart.js
+  styles.css        Custom dark theme with glassmorphism cards, animated
+                    progress bar, chip badges
+
+HOW THE FEATURE CHIPS WORK:
+  Each of the 30 features has a value of 1, 0, or -1.
+  JavaScript maps these to CSS classes:
+    val === 1   --> chip-safe    (green,  shows "Safe")
+    val === -1  --> chip-danger  (red,    shows "Risk")
+    val === 0   --> chip-neutral (grey,   shows "-")
+
+WHY safe_probability CAN FEEL CONFUSING:
+  When predicted class is safe (pred_class == 1):  safe_prob = proba[1]
+  When predicted class is malicious:               safe_prob = proba[0]
+  Frontend computes: riskPct = 100 - Math.round(safe_probability * 100)
+  So safe_probability of 0.05 --> risk score of 95%.
+
+
+===========================================================
+5. STEP-BY-STEP: HOW TO RUN THE PROJECT
+===========================================================
+
+PREREQUISITES:
+  - Python 3.9 or higher installed
+  - VirusTotal API key (free, optional): https://www.virustotal.com/gui/my-apikey
+
+---------------------------------------------------------
+STEP 1 -- Open Terminal in the Project Folder
+---------------------------------------------------------
+  cd "C:\Users\APARNA VINORAJ\OneDrive\Desktop\projectsss\Malicious-URL-Detection"
+
+---------------------------------------------------------
+STEP 2 -- Activate the Virtual Environment
+---------------------------------------------------------
+  .venv\Scripts\activate
+
+  Your prompt will change to show (.venv) at the start.
+
+---------------------------------------------------------
+STEP 3 -- Install All Dependencies
+---------------------------------------------------------
+  pip install -r requirements.txt
+
+  Only needed once (or after adding new packages).
+
+---------------------------------------------------------
+STEP 4 -- (Optional) Set VirusTotal API Key
+---------------------------------------------------------
+  Windows Command Prompt:
+    set VT_API_KEY=your_actual_api_key_here
+
+  Windows PowerShell:
+    $env:VT_API_KEY="your_actual_api_key_here"
+
+  Skip if you don't have a key. App still works without it.
+
+
+$env:VT_API_KEY = "08d9bf20ca1ee0fa1158d0485f82d38f3002de642316e9712cd0f30fc2500417"
+
+---------------------------------------------------------
+STEP 5 -- Train the ML Model
+---------------------------------------------------------
+  python train_model.py
+
+  Expected output:
+    Loading data from: ...malicious.csv
+    Dataset: 11054 samples, 30 features
+    Class distribution: Safe=5715  Malicious=5339
+
+    Train set: 8843  |  Test set: 2211
+
+    Training Gradient Boosting Classifier ...
+
+    === Evaluation Results ===
+    Accuracy : 0.9653
+
+    Classification Report:
+                  precision  recall  f1-score
+    Malicious (-1)   0.97      0.96      0.96
+    Safe (1)         0.96      0.97      0.97
+
+    Model saved to: ...model.pkl
+
+  Creates model.pkl. Only needs to be run once.
+
+---------------------------------------------------------
+STEP 6 -- Start the Flask App
+---------------------------------------------------------
+  python app.py
+
+  Expected output:
+    2024-04-16 14:00:00  INFO  Model loaded from ...model.pkl
+    2024-04-16 14:00:01  INFO  SHAP explainer ready
+     * Running on http://0.0.0.0:5000
+
+---------------------------------------------------------
+STEP 7 -- Open the App in Browser
+---------------------------------------------------------
+  Scanner       -->  http://localhost:5000/
+  Bulk Checker  -->  http://localhost:5000/bulk
+  History       -->  http://localhost:5000/history
+  Dashboard     -->  http://localhost:5000/dashboard
+
+---------------------------------------------------------
+STEP 8 -- Stop the App
+---------------------------------------------------------
+  Press Ctrl + C in the terminal.
+
+
+===========================================================
+6. REST API DOCUMENTATION
+===========================================================
+
+ENDPOINT:  POST /api/check
+
+Request:
+  POST http://localhost:5000/api/check
+  Content-Type: application/json
+  Body: {"url": "https://example.com"}
+
+-------------------------------------------
+TERMINAL COMMANDS (curl)
+-------------------------------------------
+
+Check a safe URL:
+  curl -X POST http://localhost:5000/api/check ^
+       -H "Content-Type: application/json" ^
+       -d "{\"url\": \"https://google.com\"}"
+
+Check a malicious IP-based URL:
+  curl -X POST http://localhost:5000/api/check ^
+       -H "Content-Type: application/json" ^
+       -d "{\"url\": \"http://192.168.1.1/login\"}"
+
+Check a URL with @ symbol:
+  curl -X POST http://localhost:5000/api/check ^
+       -H "Content-Type: application/json" ^
+       -d "{\"url\": \"http://google.com@evil-site.com/steal\"}"
+
+Check a URL shortener:
+  curl -X POST http://localhost:5000/api/check ^
+       -H "Content-Type: application/json" ^
+       -d "{\"url\": \"https://bit.ly/3xample\"}"
+
+-------------------------------------------
+POWERSHELL ALTERNATIVE (Windows)
+-------------------------------------------
+
+  Invoke-RestMethod -Uri "http://localhost:5000/api/check" `
+    -Method POST `
+    -ContentType "application/json" `
+    -Body '{"url": "https://google.com"}'
+
+-------------------------------------------
+SAMPLE RESPONSES
+-------------------------------------------
+
+Safe URL:
+  {
+    "url": "https://google.com",
+    "is_safe": true,
+    "safe_probability": 0.9821,
+    "safe_pct": 98.21,
+    "rule_triggered": null,
+    "features": {
+      "Using IP Address": 1,
+      "Long URL": 1,
+      "HTTPS Protocol": 1,
+      ...
+    }
+  }
+
+Malicious -- rule triggered:
+  {
+    "url": "http://192.168.1.1/login",
+    "is_safe": false,
+    "safe_probability": 0.0,
+    "safe_pct": 0.0,
+    "rule_triggered": "Raw IP address used instead of domain name",
+    "features": null,
+    "shap": null,
+    "threat_intel": null
+  }
+
+Malicious -- ML model:
+  {
+    "url": "http://paypal-secure-login.tk/verify",
+    "is_safe": false,
+    "safe_probability": 0.0731,
+    "safe_pct": 7.31,
+    "rule_triggered": null,
+    "features": {
+      "Using IP Address": 1,
+      "Prefix/Suffix Hyphen": -1,
+      "Domain Registration Length": -1,
+      "Age of Domain": -1
+    }
+  }
+
+
+===========================================================
+7. CONCEPT GLOSSARY
+===========================================================
+
+  Term                      Plain English
+  ------------------------  -------------------------------------------------------
+  Flask                     A lightweight Python library for building web apps
+
+  Socket.IO / WebSocket     A protocol for two-way real-time communication between
+                            browser and server -- unlike HTTP which is
+                            request/response only
+
+  GBC (Gradient Boosting    An ensemble ML algorithm that builds many small decision
+  Classifier)               trees, each correcting the mistakes of the previous
+
+  pickle                    Python's built-in way to save/load Python objects (like
+                            a trained model) to/from a binary file
+
+  SHAP                      A technique from game theory that fairly distributes the
+                            "credit" for a prediction among the input features
+
+  WHOIS                     A public database that records who registered a domain
+                            and when -- useful for detecting newly created phishing
+                            domains
+
+  BeautifulSoup             A Python library for parsing and navigating HTML/XML
+
+  SQLite                    A file-based database that requires no server setup --
+                            the entire database is a single .db file
+
+  Feature engineering       The process of converting raw data (a URL string) into
+                            structured numbers that an ML model can learn from
+
+  Stratified split          Splitting data so both train and test sets have the same
+                            proportion of classes (prevents imbalanced splits)
+
+  Base64                    An encoding that converts binary/text to a URL-safe
+                            string (used to create the VirusTotal URL ID)
+
+  Parameterized query       A database query where values are passed separately from
+                            the SQL text -- prevents SQL injection attacks
+
+  Virtual environment       An isolated Python installation for one project -- keeps
+  (.venv)                   dependencies separate from other projects
+
+  REST API                  A standard way for programs to communicate over HTTP
+                            using JSON -- allows other apps/scripts to use
+                            URLGuard programmatically
+
+  Environment variable      A value stored in the OS (not in code) -- used for
+                            secrets like API keys so they are never shared
+
+===========================================================
+END OF DOCUMENTATION
+===========================================================
+
+
+
+
+

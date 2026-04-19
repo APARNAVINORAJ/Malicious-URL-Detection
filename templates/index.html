@@ -1,0 +1,321 @@
+{% extends "base.html" %}
+{% block title %}URLGuard — Scanner{% endblock %}
+
+{% block content %}
+<div class="container py-5">
+
+    <!-- Hero -->
+    <div class="text-center mb-5">
+        <div class="hero-icon mb-3">
+            <i class="fa-solid fa-shield-halved"></i>
+        </div>
+        <h1 class="hero-title">Malicious URL Detection</h1>
+        <p class="hero-subtitle">Powered by Machine Learning &bull; 30 Signal Features &bull; Real-time Analysis</p>
+    </div>
+
+    <!-- Scanner Card -->
+    <div class="row justify-content-center mb-4">
+        <div class="col-lg-8">
+            <div class="glass-card">
+                <div class="scan-input-group" id="inputGroup">
+                    <i class="fa-solid fa-link scan-icon"></i>
+                    <input type="url" id="urlInput" class="scan-input"
+                        placeholder="Enter URL to scan (e.g. https://example.com)" autofocus>
+                    <button class="scan-btn" id="scanBtn" onclick="startScan()">
+                        <span id="btnText"><i class="fa-solid fa-shield-halved me-2"></i>Scan URL</span>
+                        <span id="btnLoader" style="display:none">
+                            <span class="spinner-border spinner-border-sm me-2"></span>Scanning...
+                        </span>
+                    </button>
+                </div>
+                <div id="errorBox" class="alert-danger-custom mt-3" style="display:none"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Progress Bar (shown during scan) -->
+    <div class="row justify-content-center mb-4" id="progressSection" style="display:none">
+        <div class="col-lg-8">
+            <div class="glass-card">
+                <div class="progress-header">
+                    <div class="progress-shield">
+                        <i class="fa-solid fa-shield-halved"></i>
+                    </div>
+                    <div class="flex-grow-1">
+                        <div class="progress-title">Analysing URL...</div>
+                        <div class="progress-msg" id="progressMsg">Initializing...</div>
+                    </div>
+                    <div class="progress-pct" id="progressPct">0%</div>
+                </div>
+                <div class="progress-track mt-3">
+                    <div class="progress-fill" id="progressFill" style="width:0%"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Results (injected by JS) -->
+    <div id="resultSection"></div>
+
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+const socket = io();
+
+// ── Enter key support ────────────────────────────────────────
+document.getElementById('urlInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') startScan();
+});
+
+// ── Start scan ───────────────────────────────────────────────
+function startScan() {
+    const url = document.getElementById('urlInput').value.trim();
+    if (!url) { showError('Please enter a URL.'); return; }
+
+    hideError();
+    document.getElementById('resultSection').innerHTML = '';
+    showProgress();
+    socket.emit('scan_url', { url: url });
+}
+
+// ── Socket events ────────────────────────────────────────────
+socket.on('scan_progress', function(data) {
+    setProgress(data.pct, data.msg);
+});
+
+socket.on('scan_result', function(data) {
+    hideProgress();
+    renderResult(data);
+});
+
+socket.on('scan_error', function(data) {
+    hideProgress();
+    showError(data.message);
+});
+
+// ── Progress helpers ─────────────────────────────────────────
+function showProgress() {
+    document.getElementById('progressSection').style.display = 'flex';
+    document.getElementById('btnText').style.display   = 'none';
+    document.getElementById('btnLoader').style.display = 'inline-flex';
+    document.getElementById('scanBtn').disabled = true;
+    setProgress(5, 'Starting analysis...');
+}
+
+function hideProgress() {
+    document.getElementById('progressSection').style.display = 'none';
+    document.getElementById('btnText').style.display   = 'inline-flex';
+    document.getElementById('btnLoader').style.display = 'none';
+    document.getElementById('scanBtn').disabled = false;
+}
+
+function setProgress(pct, msg) {
+    document.getElementById('progressFill').style.width = pct + '%';
+    document.getElementById('progressPct').textContent  = pct + '%';
+    document.getElementById('progressMsg').textContent  = msg;
+}
+
+function showError(msg) {
+    const box = document.getElementById('errorBox');
+    box.innerHTML = '<i class="fa-solid fa-circle-exclamation me-2"></i>' + msg;
+    box.style.display = 'block';
+}
+function hideError() {
+    document.getElementById('errorBox').style.display = 'none';
+}
+
+// ── Render full result ───────────────────────────────────────
+function renderResult(d) {
+    const safe       = d.is_safe;
+    const safePct    = safe ? Math.round(d.safe_probability * 100)
+                            : Math.round((1 - d.safe_probability) * 100);
+    const riskPct    = 100 - Math.round(d.safe_probability * 100);
+    const colorClass = safe ? 'result-safe' : 'result-danger';
+    const ringClass  = safe ? 'ring-safe'   : 'ring-danger';
+    const scoreLabel = safe ? safePct + '%<br><small>Safe</small>'
+                            : riskPct + '%<br><small>Risk</small>';
+    const verdict    = safe ? 'Website Appears Safe' : 'Malicious / Phishing Risk';
+    const icon       = safe ? 'fa-shield-check' : 'fa-triangle-exclamation';
+    const actionBtn  = safe
+        ? `<a href="${d.url}" target="_blank" rel="noopener noreferrer" class="btn-action btn-safe">
+               <i class="fa-solid fa-arrow-up-right-from-square me-2"></i>Continue to Site</a>`
+        : `<a href="${d.url}" target="_blank" rel="noopener noreferrer" class="btn-action btn-danger-outline">
+               <i class="fa-solid fa-triangle-exclamation me-2"></i>Proceed Anyway (Risky)</a>`;
+
+    const ruleBadge = d.rule_triggered
+        ? `<div class="rule-badge mt-3">
+               <i class="fa-solid fa-bolt me-2"></i>
+               <strong>Rule triggered:</strong> ${d.rule_triggered}
+           </div>` : '';
+
+    const featureBtn = d.features
+        ? `<button onclick="document.getElementById('featuresSection').scrollIntoView({behavior:'smooth'})"
+                   class="btn-action btn-outline">
+               <i class="fa-solid fa-list me-2"></i>View Feature Analysis</button>` : '';
+
+    let html = `
+    <div class="row justify-content-center mb-4">
+      <div class="col-lg-8">
+        <div class="result-card ${colorClass}">
+          <div class="result-header">
+            <div class="result-icon"><i class="fa-solid ${icon}"></i></div>
+            <div class="result-text">
+              <h2 class="result-verdict">${verdict}</h2>
+              <a href="${d.url}" target="_blank" rel="noopener noreferrer" class="result-url">
+                <i class="fa-solid fa-arrow-up-right-from-square me-1"></i>${d.url}</a>
+            </div>
+            <div class="result-score">
+              <div class="score-ring ${ringClass}">${scoreLabel}</div>
+            </div>
+          </div>
+          ${ruleBadge}
+          <div class="result-actions mt-3">${actionBtn} ${featureBtn}</div>
+        </div>
+      </div>
+    </div>`;
+
+    // Threat Intel panel
+    if (d.threat_intel) html += renderThreatIntel(d.threat_intel, d.url);
+
+    // SHAP panel
+    if (d.shap && d.shap.length) html += renderShap(d.shap);
+
+    // Feature breakdown
+    if (d.features) html += renderFeatures(d.features);
+
+    document.getElementById('resultSection').innerHTML = html;
+    document.getElementById('resultSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ── Threat Intel panel ───────────────────────────────────────
+function renderThreatIntel(ti, url) {
+    if (ti.status === 'unavailable') {
+        return `<div class="row justify-content-center mb-4">
+          <div class="col-lg-8">
+            <div class="glass-card ti-panel">
+              <h6 class="section-title mb-2">
+                <i class="fa-solid fa-database me-2" style="color:var(--accent-cyan)"></i>VirusTotal
+                <span class="ti-badge ti-na ms-2">API key not configured</span>
+              </h6>
+              <p class="text-muted" style="font-size:.85rem;margin:0">
+                Set <code>VT_API_KEY</code> environment variable to enable live threat intelligence.</p>
+            </div>
+          </div></div>`;
+    }
+    if (ti.status === 'submitted') {
+        return `<div class="row justify-content-center mb-4">
+          <div class="col-lg-8">
+            <div class="glass-card ti-panel">
+              <h6 class="section-title mb-2">
+                <i class="fa-solid fa-database me-2" style="color:var(--accent-cyan)"></i>VirusTotal
+                <span class="ti-badge ti-warn ms-2">Submitted for analysis</span>
+              </h6>
+              <p class="text-muted" style="font-size:.85rem;margin:0">${ti.message}</p>
+            </div>
+          </div></div>`;
+    }
+    const m = ti.malicious, s = ti.suspicious, h = ti.harmless, t = ti.total;
+    const threat = m + s;
+    const badgeClass = m > 0 ? 'ti-danger' : s > 0 ? 'ti-warn' : 'ti-safe';
+    const badgeText  = m > 0 ? `${m} engines flagged malicious`
+                     : s > 0 ? `${s} engines suspicious` : 'Clean';
+    return `
+    <div class="row justify-content-center mb-4">
+      <div class="col-lg-8">
+        <div class="glass-card ti-panel">
+          <div class="d-flex align-items-center justify-content-between mb-3">
+            <h6 class="section-title mb-0">
+              <i class="fa-solid fa-database me-2" style="color:var(--accent-cyan)"></i>VirusTotal
+            </h6>
+            <span class="ti-badge ${badgeClass}">${badgeText}</span>
+          </div>
+          <div class="ti-stats">
+            <div class="ti-stat"><span class="ti-num ti-num-danger">${m}</span><span class="ti-lbl">Malicious</span></div>
+            <div class="ti-stat"><span class="ti-num ti-num-warn">${s}</span><span class="ti-lbl">Suspicious</span></div>
+            <div class="ti-stat"><span class="ti-num ti-num-safe">${h}</span><span class="ti-lbl">Harmless</span></div>
+            <div class="ti-stat"><span class="ti-num">${t}</span><span class="ti-lbl">Total Engines</span></div>
+          </div>
+          <div class="ti-bar-wrap mt-3">
+            <div class="ti-bar-seg ti-bar-danger" style="width:${t>0?m/t*100:0}%" title="${m} malicious"></div>
+            <div class="ti-bar-seg ti-bar-warn"   style="width:${t>0?s/t*100:0}%" title="${s} suspicious"></div>
+            <div class="ti-bar-seg ti-bar-safe"   style="width:${t>0?h/t*100:0}%" title="${h} harmless"></div>
+          </div>
+          <a href="${ti.vt_link}" target="_blank" rel="noopener noreferrer"
+             class="ti-link mt-3 d-inline-block">
+            <i class="fa-solid fa-arrow-up-right-from-square me-1"></i>View full report on VirusTotal</a>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ── SHAP panel ───────────────────────────────────────────────
+function renderShap(shap) {
+    const maxAbs = Math.max(...shap.map(s => Math.abs(s.value)));
+    const rows = shap.map(s => {
+        const pct   = maxAbs > 0 ? Math.round(Math.abs(s.value) / maxAbs * 100) : 0;
+        const dir   = s.direction === 'safe';
+        const cls   = dir ? 'shap-safe' : 'shap-danger';
+        const label = dir ? '→ Safe' : '→ Risk';
+        return `
+        <div class="shap-row">
+          <span class="shap-name">${s.feature}</span>
+          <div class="shap-bar-wrap">
+            <div class="shap-bar ${cls}" style="width:${pct}%"></div>
+          </div>
+          <span class="shap-label ${cls}">${label}</span>
+          <span class="shap-val">${s.value > 0 ? '+' : ''}${s.value.toFixed(3)}</span>
+        </div>`;
+    }).join('');
+
+    return `
+    <div class="row justify-content-center mb-4">
+      <div class="col-lg-8">
+        <div class="glass-card">
+          <h6 class="section-title mb-1">
+            <i class="fa-solid fa-brain me-2" style="color:var(--accent-cyan)"></i>
+            Why this verdict? <span class="section-subtitle">— SHAP feature contributions</span>
+          </h6>
+          <p class="text-muted mb-3" style="font-size:.82rem">
+            Top 8 features driving the model's decision. Positive = pushed toward Safe, Negative = pushed toward Risk.
+          </p>
+          <div class="shap-list">${rows}</div>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ── Feature breakdown ────────────────────────────────────────
+function renderFeatures(features) {
+    const chips = Object.entries(features).map(([name, val]) => {
+        const cls   = val === 1 ? 'chip-safe' : val === -1 ? 'chip-danger' : 'chip-neutral';
+        const icon  = val === 1 ? 'fa-check'  : val === -1 ? 'fa-xmark'   : 'fa-minus';
+        const badge = val === 1 ? 'Safe'       : val === -1 ? 'Risk'       : '—';
+        return `<div class="feature-chip ${cls}">
+            <span class="chip-icon"><i class="fa-solid ${icon}"></i></span>
+            <span class="chip-name">${name}</span>
+            <span class="chip-badge">${badge}</span>
+          </div>`;
+    }).join('');
+
+    return `
+    <div class="row justify-content-center mb-4" id="featuresSection">
+      <div class="col-lg-10">
+        <div class="glass-card">
+          <h6 class="section-title mb-4">
+            <i class="fa-solid fa-microscope me-2"></i>Feature Analysis
+            <span class="section-subtitle">— 30 signals examined</span>
+          </h6>
+          <div class="features-grid">${chips}</div>
+          <div class="features-legend mt-3">
+            <span class="legend-item"><span class="legend-dot dot-safe"></span>Safe signal</span>
+            <span class="legend-item"><span class="legend-dot dot-danger"></span>Risk signal</span>
+            <span class="legend-item"><span class="legend-dot dot-neutral"></span>Neutral / Unknown</span>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+</script>
+{% endblock %}

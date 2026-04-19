@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}URLGuard — Scan History{% endblock %}
+
+{% block content %}
+<div class="container py-5">
+
+    <div class="page-header mb-4">
+        <h2><i class="fa-solid fa-clock-rotate-left me-2"></i>Scan History</h2>
+        <p class="text-muted">Last {{ scans|length }} URL scans</p>
+    </div>
+
+    {% if scans %}
+    <div class="glass-card p-0">
+        <div class="table-responsive">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>URL</th>
+                        <th>Verdict</th>
+                        <th>Confidence</th>
+                        <th>Rule / Model</th>
+                        <th>Scanned At</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for scan in scans %}
+                    <tr>
+                        <td class="text-muted" style="font-size:0.8rem">{{ loop.index }}</td>
+                        <td>
+                            <a href="{{ scan.url }}" target="_blank" rel="noopener noreferrer"
+                               class="url-cell" title="{{ scan.url }}">
+                                {{ scan.url[:60] }}{% if scan.url|length > 60 %}…{% endif %}
+                            </a>
+                        </td>
+                        <td>
+                            {% if scan.is_safe %}
+                            <span class="verdict-badge badge-safe">
+                                <i class="fa-solid fa-shield-check me-1"></i>Safe
+                            </span>
+                            {% else %}
+                            <span class="verdict-badge badge-danger">
+                                <i class="fa-solid fa-triangle-exclamation me-1"></i>Malicious
+                            </span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="confidence-bar-wrap">
+                                <div class="confidence-bar {{ 'bar-safe' if scan.is_safe else 'bar-danger' }}"
+                                     style="width: {{ (scan.safe_probability * 100)|round|int }}%"></div>
+                            </div>
+                            <span style="font-size:0.8rem; color:var(--text-secondary)">
+                                {{ (scan.safe_probability * 100)|round(1) }}%
+                            </span>
+                        </td>
+                        <td style="font-size:0.8rem; color:var(--text-secondary)">
+                            {% if scan.rule_triggered %}
+                            <span title="{{ scan.rule_triggered }}">
+                                <i class="fa-solid fa-bolt me-1" style="color:var(--accent-yellow)"></i>
+                                {{ scan.rule_triggered[:40] }}{% if scan.rule_triggered|length > 40 %}…{% endif %}
+                            </span>
+                            {% else %}
+                            <span style="color:var(--accent-cyan)">
+                                <i class="fa-solid fa-robot me-1"></i>ML Model
+                            </span>
+                            {% endif %}
+                        </td>
+                        <td style="font-size:0.8rem; color:var(--text-secondary); white-space:nowrap">
+                            {{ scan.scanned_at }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <i class="fa-solid fa-inbox"></i>
+        <p>No scans yet. <a href="/">Check your first URL</a></p>
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}

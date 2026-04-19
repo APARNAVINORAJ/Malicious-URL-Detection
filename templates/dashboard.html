@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}URLGuard — Dashboard{% endblock %}
+
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="container py-5">
+
+    <div class="page-header mb-4">
+        <h2><i class="fa-solid fa-chart-pie me-2"></i>Dashboard</h2>
+        <p class="text-muted">Scan analytics and threat overview</p>
+    </div>
+
+    <!-- Stat Cards -->
+    <div class="row g-4 mb-5">
+        <div class="col-md-4">
+            <div class="stat-card">
+                <div class="stat-icon icon-blue"><i class="fa-solid fa-globe"></i></div>
+                <div class="stat-body">
+                    <div class="stat-number">{{ stats.total }}</div>
+                    <div class="stat-label">Total URLs Scanned</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="stat-card">
+                <div class="stat-icon icon-green"><i class="fa-solid fa-shield-check"></i></div>
+                <div class="stat-body">
+                    <div class="stat-number" style="color:var(--accent-green)">{{ stats.safe }}</div>
+                    <div class="stat-label">Safe URLs</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="stat-card">
+                <div class="stat-icon icon-red"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                <div class="stat-body">
+                    <div class="stat-number" style="color:var(--accent-red)">{{ stats.malicious }}</div>
+                    <div class="stat-label">Malicious URLs</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Charts Row -->
+    <div class="row g-4 mb-5">
+        <!-- Doughnut -->
+        <div class="col-md-5">
+            <div class="glass-card h-100">
+                <h6 class="section-title mb-4"><i class="fa-solid fa-chart-pie me-2"></i>Safe vs Malicious</h6>
+                {% if stats.total > 0 %}
+                <div style="max-width:280px; margin:0 auto">
+                    <canvas id="donutChart"></canvas>
+                </div>
+                {% else %}
+                <div class="empty-state" style="padding:2rem 0">
+                    <i class="fa-solid fa-chart-pie" style="font-size:2rem"></i>
+                    <p class="mt-2">No data yet</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Bar chart -->
+        <div class="col-md-7">
+            <div class="glass-card h-100">
+                <h6 class="section-title mb-4"><i class="fa-solid fa-chart-bar me-2"></i>Scans — Last 7 Days</h6>
+                {% if stats.total > 0 %}
+                <canvas id="barChart" style="max-height:240px"></canvas>
+                {% else %}
+                <div class="empty-state" style="padding:2rem 0">
+                    <i class="fa-solid fa-chart-bar" style="font-size:2rem"></i>
+                    <p class="mt-2">No data yet</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Top Rules -->
+    {% if stats.top_rules %}
+    <div class="row">
+        <div class="col-12">
+            <div class="glass-card">
+                <h6 class="section-title mb-4">
+                    <i class="fa-solid fa-bolt me-2"></i>Most Triggered Rules
+                </h6>
+                {% for rule in stats.top_rules %}
+                <div class="rule-row">
+                    <span class="rule-name">
+                        <i class="fa-solid fa-chevron-right me-2" style="color:var(--accent-yellow)"></i>
+                        {{ rule.rule }}
+                    </span>
+                    <div class="rule-bar-wrap">
+                        <div class="rule-bar"
+                             style="width:{{ ((rule.count / stats.top_rules[0].count) * 100)|round|int }}%"></div>
+                    </div>
+                    <span class="rule-count">{{ rule.count }}</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    const safe      = {{ stats.safe }};
+    const malicious = {{ stats.malicious }};
+    const days      = {{ stats.daily | map(attribute='date') | list | tojson }};
+    const counts    = {{ stats.daily | map(attribute='count') | list | tojson }};
+
+    if (safe + malicious > 0) {
+        new Chart(document.getElementById("donutChart"), {
+            type: "doughnut",
+            data: {
+                labels: ["Safe", "Malicious"],
+                datasets: [{
+                    data: [safe, malicious],
+                    backgroundColor: ["#00ff88", "#ff3366"],
+                    borderColor: "#0d1526",
+                    borderWidth: 3,
+                    hoverOffset: 8,
+                }]
+            },
+            options: {
+                plugins: {
+                    legend: { labels: { color: "#e0e8ff", font: { family: "Inter" } } }
+                },
+                cutout: "65%",
+            }
+        });
+
+        new Chart(document.getElementById("barChart"), {
+            type: "bar",
+            data: {
+                labels: days,
+                datasets: [{
+                    label: "Scans",
+                    data: counts,
+                    backgroundColor: "rgba(0, 212, 255, 0.3)",
+                    borderColor: "#00d4ff",
+                    borderWidth: 2,
+                    borderRadius: 6,
+                }]
+            },
+            options: {
+                scales: {
+                    x: { ticks: { color: "#8899bb" }, grid: { color: "rgba(255,255,255,0.05)" } },
+                    y: { ticks: { color: "#8899bb", stepSize: 1 }, grid: { color: "rgba(255,255,255,0.05)" } }
+                },
+                plugins: { legend: { display: false } },
+            }
+        });
+    }
+</script>
+{% endblock %}

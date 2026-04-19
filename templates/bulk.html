@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}URLGuard — Bulk Check{% endblock %}
+
+{% block content %}
+<div class="container py-5">
+
+    <div class="page-header mb-4">
+        <h2><i class="fa-solid fa-list-check me-2"></i>Bulk URL Checker</h2>
+        <p class="text-muted">Paste up to 50 URLs (one per line) for batch scanning</p>
+    </div>
+
+    <div class="row g-4">
+        <!-- Input -->
+        <div class="col-lg-5">
+            <div class="glass-card h-100">
+                <form method="POST" action="/bulk" id="bulkForm">
+                    <label class="form-label text-muted mb-2">
+                        <i class="fa-solid fa-paste me-1"></i>URLs to scan
+                    </label>
+                    <textarea name="urls" id="urlsInput" class="bulk-textarea" rows="14"
+                        placeholder="https://google.com&#10;https://example.com&#10;http://suspicious-site.ru/login&#10;...">{% if request.form.urls %}{{ request.form.urls }}{% endif %}</textarea>
+
+                    {% if error %}
+                    <div class="alert-danger-custom mt-2">
+                        <i class="fa-solid fa-circle-exclamation me-2"></i>{{ error }}
+                    </div>
+                    {% endif %}
+
+                    <div class="d-flex align-items-center justify-content-between mt-3">
+                        <span class="text-muted" style="font-size:0.85rem" id="lineCount">0 URLs entered</span>
+                        <button type="submit" class="scan-btn" id="bulkBtn">
+                            <span id="btnText"><i class="fa-solid fa-radar me-2"></i>Scan All</span>
+                            <span id="btnLoader" style="display:none">
+                                <span class="spinner-border spinner-border-sm me-2"></span>Scanning...
+                            </span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div class="col-lg-7">
+            {% if results %}
+            <div class="glass-card p-0">
+                <div class="p-3 border-bottom" style="border-color:var(--border) !important">
+                    <h6 class="mb-0 section-title">
+                        <i class="fa-solid fa-table me-2"></i>Results
+                        <span class="ms-2" style="font-weight:400; color:var(--text-secondary)">
+                            — {{ results|length }} URLs scanned,
+                            <span style="color:var(--accent-red)">
+                                {{ results | selectattr('is_safe', 'equalto', false) | list | length }} malicious
+                            </span>
+                        </span>
+                    </h6>
+                </div>
+                <div class="table-responsive">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>URL</th>
+                                <th>Verdict</th>
+                                <th>Score</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for r in results %}
+                            <tr>
+                                <td class="text-muted" style="font-size:0.8rem">{{ loop.index }}</td>
+                                <td>
+                                    <a href="{{ r.url }}" target="_blank" rel="noopener noreferrer"
+                                       class="url-cell" title="{{ r.url }}">
+                                        {{ r.url[:45] }}{% if r.url|length > 45 %}…{% endif %}
+                                    </a>
+                                </td>
+                                <td>
+                                    {% if r.get('error') %}
+                                    <span class="verdict-badge badge-neutral">
+                                        <i class="fa-solid fa-circle-exclamation me-1"></i>Error
+                                    </span>
+                                    {% elif r.is_safe %}
+                                    <span class="verdict-badge badge-safe">
+                                        <i class="fa-solid fa-shield-check me-1"></i>Safe
+                                    </span>
+                                    {% else %}
+                                    <span class="verdict-badge badge-danger">
+                                        <i class="fa-solid fa-triangle-exclamation me-1"></i>Malicious
+                                    </span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if r.safe_pct is not none %}
+                                    <div class="confidence-bar-wrap">
+                                        <div class="confidence-bar {{ 'bar-safe' if r.is_safe else 'bar-danger' }}"
+                                             style="width:{{ r.safe_pct|round|int }}%"></div>
+                                    </div>
+                                    <span style="font-size:0.8rem; color:var(--text-secondary)">{{ r.safe_pct }}%</span>
+                                    {% else %}
+                                    <span class="text-muted" style="font-size:0.8rem">—</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {% else %}
+            <div class="glass-card empty-state" style="height:100%; min-height:300px">
+                <i class="fa-solid fa-list-check" style="font-size:3rem; color:var(--border)"></i>
+                <p class="mt-3" style="color:var(--text-secondary)">Results will appear here after scanning</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    const textarea = document.getElementById("urlsInput");
+    const lineCount = document.getElementById("lineCount");
+
+    function updateCount() {
+        const lines = textarea.value.split("\n").filter(l => l.trim()).length;
+        lineCount.textContent = lines + " URL" + (lines !== 1 ? "s" : "") + " entered";
+        lineCount.style.color = lines > 50 ? "var(--accent-red)" : "var(--text-secondary)";
+    }
+
+    textarea.addEventListener("input", updateCount);
+    updateCount();
+
+    document.getElementById("bulkForm").addEventListener("submit", function () {
+        document.getElementById("btnText").style.display = "none";
+        document.getElementById("btnLoader").style.display = "inline-flex";
+        document.getElementById("bulkBtn").disabled = true;
+    });
+</script>
+{% endblock %}
